@@ -338,6 +338,18 @@
         var mainMarker = L.marker([13.0827, 80.2707], { draggable: true }).addTo(map);
         var currentTab = 'dashboard';
         var mainChart;
+        var cityState = {
+            area: "Locating...",
+            lat: 13.0827,
+            lng: 80.2707,
+            sustainability: 0,
+            traffic: 0,
+            energy: 0,
+            water: 0,
+            aqi: 45,
+            waste: 60,
+            forecast: "Predicting trends..."
+        };
 
         async function handleSearch() {
             const query = document.getElementById('location-search').value;
@@ -367,6 +379,8 @@
         }
 
         async function updateLocationData(lat, lng) {
+            cityState.lat = lat;
+            cityState.lng = lng;
             const titleMap = {
                 'dashboard': 'Sustainability Index',
                 'energy': 'Energy Resilience Index',
@@ -380,18 +394,22 @@
             try {
                 const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}`);
                 const data = await res.json();
-                // Extraction of specific city/area name
                 var area = data.address.suburb || data.address.neighbourhood || data.address.city || data.display_name.split(',')[0] || "Target Zone";
                 document.getElementById('place-name').innerText = area;
-            } catch (e) { document.getElementById('place-name').innerText = "Analyzing Area..."; }
+                cityState.area = area;
+            } catch (e) {
+                document.getElementById('place-name').innerText = "Analyzing Area...";
+                cityState.area = "Monitored Zone";
+            }
 
             const seed = (lat + lng) * 1000;
             const riskValue = Math.abs(Math.sin(seed));
             let score, chartData, rec, color, alertObj = null;
 
-            // Simple Simulation Logic
+            // Simple Simulation Logic & State Update
             if (currentTab === 'traffic') {
                 score = Math.floor(25 + (riskValue * 40));
+                cityState.traffic = score;
                 chartData = [100, 180, 250, 190, 220, 280];
                 color = '#ef4444';
                 if (score < 35) {
@@ -401,20 +419,35 @@
             } else if (currentTab === 'energy') {
                 let isShutdown = riskValue < 0.15;
                 score = isShutdown ? 0 : Math.floor(65 + (Math.abs(Math.cos(seed)) * 30));
+                cityState.energy = score;
                 chartData = isShutdown ? [0, 0, 0, 0, 0, 0] : [80, 75, 90, 85, 92, 88];
                 color = isShutdown ? '#000000' : '#3b82f6';
                 if (isShutdown) {
                     alertObj = { title: "GRID FAILURE", msg: `Power outage detected.`, status: "DANGER" };
                     rec = `FIX: Emergency repair dispatched.`;
                 } else { rec = "Energy grid stable."; }
+            } else if (currentTab === 'water') {
+                score = Math.floor(68 + (riskValue * 25));
+                cityState.water = score;
+                chartData = [70, 72, 75, 71, 74, 78];
+                color = '#3b82f6';
+                rec = "Water supply levels optimal.";
             } else {
                 score = Math.floor(72 + (riskValue * 20));
+                cityState.sustainability = score;
                 chartData = [60, 65, 62, 70, 68, 75];
                 color = '#10b981';
                 rec = "Urban health optimal.";
             }
 
-            document.getElementById('weather-forecast').innerText = riskValue > 0.7 ? "Tomorrow: Rain Expected." : "Tomorrow: Clear Skies.";
+            // Sync other metrics for demo consistency
+            if (!cityState.traffic) cityState.traffic = Math.floor(40 + (riskValue * 20));
+            if (!cityState.energy) cityState.energy = Math.floor(70 + (riskValue * 20));
+            if (!cityState.water) cityState.water = Math.floor(75 + (riskValue * 15));
+            if (!cityState.sustainability) cityState.sustainability = Math.floor(70 + (riskValue * 20));
+
+            cityState.forecast = riskValue > 0.7 ? "Tomorrow: Rain Expected." : "Tomorrow: Clear Skies.";
+            document.getElementById('weather-forecast').innerText = cityState.forecast;
             updateUI(score, color, rec, alertObj);
             updateChart(chartData, color);
         }
@@ -495,64 +528,96 @@
             recognition.start();
         }
 
-        function sendChatMessage() {
+        async function sendChatMessage() {
             const input = document.getElementById('chat-input');
             const text = input.value.trim();
-            const currentArea = document.getElementById('place-name').innerText;
-
             if (!text) return;
 
             addMessage(text, 'user');
             input.value = '';
 
-            // Improved Response Logic
-            setTimeout(() => {
-                let response = "";
-                const lowText = text.toLowerCase();
+            const lowText = text.toLowerCase();
+            const thinkingMsg = addMessage("Thinking...", 'ai'); // Add thinking indicator
 
-                // Context-Aware Responses
-                if (lowText.includes('traffic') || lowText.includes('congestion')) {
-                    const status = currentArea !== "Locating..." ?
-                        `Current traffic flow in ${currentArea} is optimal with a density index of 42%.` :
-                        "Traffic flow is stable across monitored zones.";
-                    response = `${status} AI suggests a green wave signal pattern for main avenues.`;
+            let targetArea = cityState.area;
+            let targetMetrics = cityState;
+            let isNewLocation = false;
+
+            // Location Detection Logic (e.g., "in Mumbai", "for Chennai")
+            const locRegex = /(?:in|at|for|about|to|near|of|around|show)\s+([a-zA-Z\s]{3,})/i;
+            const locMatch = text.match(locRegex);
+
+            if (locMatch) {
+                const foundLoc = locMatch[1].replace(/\?|\.|!/g, '').trim();
+                try {
+                    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${foundLoc}&countrycodes=in&limit=1`);
+                    const data = await res.json();
+                    if (data && data.length > 0) {
+                        const lat = parseFloat(data[0].lat);
+                        const lon = parseFloat(data[0].lon);
+                        targetMetrics = calculateMetrics(lat, lon);
+                        targetArea = data[0].display_name.split(',')[0];
+                        isNewLocation = true;
+                        window.lastDiscussedCoords = { lat, lon, name: targetArea };
+                    }
+                } catch (e) { console.error("Chat search failed"); }
+            }
+
+            setTimeout(() => {
+                thinkingMsg.remove(); // Clear thinking bubble
+                let response = "";
+                const { traffic, energy, water, sustainability, aqi, waste, forecast } = targetMetrics;
+
+                // Priority: Navigation commands
+                if (lowText.includes('fly') || lowText.includes('go to') || lowText.includes('navigate') || (lowText.includes('show') && isNewLocation)) {
+                    if (window.lastDiscussedCoords) {
+                        map.flyTo([window.lastDiscussedCoords.lat, window.lastDiscussedCoords.lon], 14, { duration: 2 });
+                        mainMarker.setLatLng([window.lastDiscussedCoords.lat, window.lastDiscussedCoords.lon]);
+                        updateLocationData(window.lastDiscussedCoords.lat, window.lastDiscussedCoords.lon);
+                        response = `Certainly! Navigating to **${window.lastDiscussedCoords.name}** now. Dashboard metrics are syncing.`;
+                        addMessage(response, 'ai');
+                        return;
+                    }
                 }
-                else if (lowText.includes('energy') || lowText.includes('power') || lowText.includes('electricity')) {
-                    response = `Energy consumption in ${currentArea} is 12% below the monthly average. Solar micro-grids are active and feeding 450 kWh back to the main grid.`;
+
+                // Data Queries
+                if (lowText.includes('traffic') || lowText.includes('congestion') || lowText.includes('mobility')) {
+                    response = `For **${targetArea}**, mobility efficiency is **${traffic}%**. ${traffic < 40 ? "Congestion alert detected." : "Flow is stable."}`;
+                }
+                else if (lowText.includes('energy') || lowText.includes('power')) {
+                    response = `Energy Resilience for **${targetArea}** is **${energy}%**.`;
                 }
                 else if (lowText.includes('water') || lowText.includes('aqua')) {
-                    response = `Water quality sensors in ${currentArea} report pH levels of 7.2. Reservoir levels are tracking at 88% capacity. No leaks detected in the last 24 hours.`;
+                    response = `Aqua resource management score for **${targetArea}** is **${water}%**.`;
                 }
-                else if (lowText.includes('pollution') || lowText.includes('air quality') || lowText.includes('aqi')) {
-                    response = `Air Quality Index (AQI) in ${currentArea} is 45 (Good). Particulate matter PM2.5 levels are negligible. It's a great day for outdoor activities!`;
+                else if (lowText.includes('sustainability') || lowText.includes('index')) {
+                    response = `The integrated Sustainability Index for **${targetArea}** is **${sustainability}%**.`;
                 }
-                else if (lowText.includes('waste') || lowText.includes('garbage')) {
-                    response = `Smart bins in ${currentArea} are at 60% capacity. Automated collection trucks are scheduled for 06:00 AM tomorrow. Recycling efficiency is up by 15% this week.`;
+                else if (lowText.includes('weather') || lowText.includes('forecast')) {
+                    response = `Forecast for **${targetArea}**: ${forecast}`;
                 }
-                else if (lowText.includes('emergency') || lowText.includes('police') || lowText.includes('fire')) {
-                    response = `Emergency services are on standby. Nearest response unit is 1.2km away. If this is a real emergency, please dial 100/112 immediately.`;
+                else if (isNewLocation) {
+                    response = `I've retrieved data for **${targetArea}**. Sustainability: ${sustainability}%, Traffic: ${traffic}%. Would you like to see this area on the map?`;
                 }
-                else if (lowText.includes('hello') || lowText.includes('hi') || lowText.includes('hey')) {
-                    response = `Hello! I am MetroPulse AI, your city intelligence assistant. I can provide real-time updates on Traffic, Energy, Water, Waste, and Safety for any area on the map.`;
-                }
-                else if (lowText.includes('thank')) {
-                    response = "You're welcome! Let me know if you need more city insights.";
+                else if (lowText.includes('hello') || lowText.includes('hi')) {
+                    response = "Hello! I am MetroPulse AI. I can fetch city data for any location in India. What can I help you with?";
                 }
                 else {
-                    response = `I'm analyzing the data for "${text}". I can currently provide specific details on Traffic, Energy, Water, Waste Management, and Air Quality for ${currentArea}.`;
+                    response = `I'm analyzing **${targetArea}**. I can provide info on Traffic (${traffic}%), Energy (${energy}%), or Sustainability (${sustainability}%).`;
                 }
 
                 addMessage(response, 'ai');
-            }, 600);
+            }, 800);
         }
 
         function addMessage(text, sender) {
             const container = document.getElementById('chat-messages');
             const div = document.createElement('div');
             div.className = `msg msg-${sender}`;
-            div.innerText = text;
+            div.innerHTML = text.replace(/\*\*(.*?)\*\*/g, '<b>$1</b>');
             container.appendChild(div);
             container.scrollTop = container.scrollHeight;
+            return div;
         }
 
         document.getElementById('chat-input').addEventListener('keypress', (e) => { if (e.key === 'Enter') sendChatMessage(); });
